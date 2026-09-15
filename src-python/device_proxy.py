@@ -937,7 +937,12 @@ def _capture_from_app_dir(app_dir):
         except Exception:
             tmp = db
         try:
-            con = sqlite3.connect(f"file:{tmp}?mode=ro")
+            # Windows 下 "file:C:\..." 是非法 URI（被当成相对路径），直接传路径打开；
+            # POSIX 仍使用只读 URI 以避免锁住线上 Cookies 库
+            if os.name == "nt":
+                con = sqlite3.connect(tmp)
+            else:
+                con = sqlite3.connect(f"file:{tmp}?mode=ro")
             for host, name, value, enc in con.execute("SELECT host_key,name,value,encrypted_value FROM cookies"):
                 blob = value or ""
                 if enc:
