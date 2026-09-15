@@ -897,6 +897,63 @@ def _find_cloud_ide_jwt(blob):
     return None
 
 
+def _scan_logs_for_jwt(app_dir):
+    """扫描 TRAE 日志目录，从运行日志中提取 Cloud-IDE-JWT 写回 accounts.json。
+
+    背景：当前版本 TRAE 把鉴权 token 写进自己的运行日志，而非 Cookies/Local Storage。
+    典型位置如 logs/<日期>/window1/exthost/trae.ai-code-completion/completion.log 中的
+    `Authorization: Cloud-IDE-JWT <jwt>`。因此仅靠 Cookies 解密会得到 0 个账号；此处
+    补充扫描日志作为兜底。仅读取、不修改日志文件。返回新增/更新账号数。
+    """
+    logs_dir = os.path.join(app_dir, "logs")
+    if not os.path.isdir(logs_dir):
+        return 0
+    # 收集所有日志类文件，按修改时间倒序，优先处理较新的日志
+    files = []
+    for dp, _, fns in os.walk(logs_dir):
+        for fn in fns:
+            if fn.lower().endswith((".log", ".txt", ".json")):
+                fp = os.path.join(dp, fn)
+                try:
+                    files.append((os.path.getmtime(fp), fp))
+                except OSError:
+                    pass
+    files.sort(reverse=True)
+    found = 0
+    seen = set()
+    for _, fp in files:
+        try:
+            with open(fp, "rb") as f:
+                data = f.read()
+        except Exception:
+            continue
+        # 主路径：Cloud-IDE-JWT <jwt> 或裸 JWT（均经 RS256/data.id 校验）
+        hit = _find_cloud_ide_jwt(data)
+        if hit:
+            uid = extract_user_id(hit)
+            if uid and uid not in seen:
+                r = update_account_jwt(uid, hit)
+                if r in ("updated", "appended", "unchanged"):
+                    seen.add(uid)
+                log(f"[local] 命中日志 {os.path.relpath(fp, app_dir)} -> {r}")
+                found += 1
+                continue
+        # 兜底：main.log 里的 "Token":"<jwt>" 形式（无 Cloud-IDE-JWT 前缀）
+        for m in re.finditer(rb'"Token"\s*:\s*"([A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+)"', data):
+            v = _valid_cloud_ide_jwt(m.group(1).decode("ascii"))
+            if v:
+                uid = extract_user_id(v)
+                if uid and uid not in seen:
+                    r = update_account_jwt(uid, v)
+                    if r in ("updated", "appended", "unchanged"):
+                        seen.add(uid)
+                    log(f"[local] 命中日志 Token {os.path.relpath(fp, app_dir)} -> {r}")
+                    found += 1
+    if found:
+        log(f"[local] 从日志扫描到 {found} 个账号")
+    return found
+
+
 def capture_from_local():
     """解密 TRAE 本地 Cookies + 扫描 Local Storage，提取 Cloud-IDE-JWT 写回 accounts.json。
     遍历 TRAE SOLO CN 与 Trae CN 两个应用的数据目录。仅 Windows 有效(需 win32crypt + cryptography)。
@@ -985,6 +1042,8 @@ def _capture_from_app_dir(app_dir):
                     r = update_account_jwt(uid, hit)
                     log(f"[local] 命中 leveldb {fn} -> {r}")
                     found += 1
+    # 3) 日志目录兜底扫描（当前 TRAE 版本把 token 写在日志里，Cookies/LocalStorage 为空）
+    found += _scan_logs_for_jwt(app_dir)
     return found
 
 # ---------------- CA / 叶子证书 ----------------
