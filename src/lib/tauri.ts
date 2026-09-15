@@ -303,8 +303,9 @@ export const api = {
     growthRun: () => invoke('workbuddy_growth_run'),
     checkinResults: (days?: number) =>
       invoke<WbCheckinRecord[]>('workbuddy_checkin_results', { days: days ?? null }),
+    // 返回「设置放宽失败的警告列表」：空数组 = 完全成功（任务已注册且三项设置已放宽）
     checkinTaskRegister: (times: string[]) =>
-      invoke('workbuddy_checkin_task_register', { times }),
+      invoke<string[]>('workbuddy_checkin_task_register', { times }),
     checkinTaskStatus: () => invoke<string[]>('workbuddy_checkin_task_status'),
     checkinTaskUnregister: () => invoke('workbuddy_checkin_task_unregister'),
     renewTaskRegister: (day?: string) => invoke('workbuddy_renew_task_register', { day: day ?? null }),

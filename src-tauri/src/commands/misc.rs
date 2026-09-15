@@ -625,7 +625,11 @@ pub(crate) fn validate_hhmm(time: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn run_schtasks(args: &[&str]) -> Result<(bool, String, String), String> {
+/// 同 `run_schtasks`，但 stdout 返回**原始字节**。
+/// 必要性：`/Query /XML` 的输出是 UTF-16LE（带 BOM），若先经 `from_utf8_lossy`
+/// 会插入大量 NUL 与替换字符，XML 无法再解析/回写（`legacy_task_start_time`
+/// 此前正是因为这点才另起一份 Command 调用）。需要原始字节的调用方用本函数。
+pub(crate) fn run_schtasks_raw(args: &[&str]) -> Result<(bool, Vec<u8>, String), String> {
     let mut full: Vec<String> = vec![
         "/c".to_string(),
         "chcp".to_string(),
@@ -642,9 +646,15 @@ pub(crate) fn run_schtasks(args: &[&str]) -> Result<(bool, String, String), Stri
         .creation_flags(0x08000000)
         .output()
         .map_err(|e| format!("执行 schtasks 失败: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    Ok((out.status.success(), stdout, stderr))
+    Ok((out.status.success(), out.stdout, stderr))
+}
+
+pub(crate) fn run_schtasks(args: &[&str]) -> Result<(bool, String, String), String> {
+    let (ok, stdout, stderr) = run_schtasks_raw(args)?;
+    // 注：普通 /Query 输出受前面 chcp 65001 影响为 UTF-8；仅 /XML 为 UTF-16，
+    // 需要原始字节的调用方请改用 run_schtasks_raw。
+    Ok((ok, String::from_utf8_lossy(&stdout).to_string(), stderr))
 }
 
 /// 把计划任务的长命令写入数据目录的 .cmd 启动器，返回启动器路径。

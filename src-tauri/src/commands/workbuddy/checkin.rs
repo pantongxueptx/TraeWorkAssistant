@@ -180,8 +180,121 @@ fn wb_checkin_task_names() -> Vec<String> {
         .collect()
 }
 
+// ── 任务设置放宽（F-16 增强）───────────────────────────────────────────────
+// schtasks /Create **没有**对应开关，实测（2026-09-15 本机 Win11）注册出的任务为：
+//   <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>   ← 用电池时不启动
+//   <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>           ← 运行中切电池被中断
+//   <StartWhenAvailable>false</StartWhenAvailable>                  ← 错过触发时刻不补跑
+// 对签到（每天一次、错过即白丢）过于苛刻：笔记本拔电、或到点时机器在睡眠/关机，
+// 当天直接漏签且无任何提示。故注册后把这三项放宽。
+// 实现走「/Query /XML 导出 → 字符串替换 → /Create /XML 覆盖」的 XML 往返（本仓既有做法，
+// 见 misc::legacy_task_start_time），不引入 PowerShell / Set-ScheduledTask 依赖。
+/// 需放宽的设置项：(标签名, schtasks 默认值, 目标值)
+const WB_TASK_SETTINGS_RELAX: [(&str, &str, &str); 3] = [
+    ("StartWhenAvailable", "false", "true"),
+    ("DisallowStartIfOnBatteries", "true", "false"),
+    ("StopIfGoingOnBatteries", "true", "false"),
+];
+
+/// 把 `<Tag>from</Tag>` 替换为 `<Tag>to</Tag>`（仅首个匹配）。
+/// - 已达标（值就是 `to`）或标签存在但值不同：标签存在时不动第二处，靠 `contains` 判断幂等；
+/// - 标签整体缺失（个别系统导出会省略默认项）：插到 `<Settings>` 之后；
+/// - 连 `<Settings>` 都没有：原样返回，由调用方判定无需覆盖。
+/// 这三个标签只出现在 `<Settings>` 段（Trigger/Action 段无同名标签），故替换不会误伤。
+fn patch_task_setting(xml: &str, tag: &str, from: &str, to: &str) -> String {
+    let old = format!("<{tag}>{from}</{tag}>");
+    if xml.contains(&old) {
+        return xml.replacen(&old, &format!("<{tag}>{to}</{tag}>"), 1);
+    }
+    // 标签已在目标值（重复注册的幂等路径）：无需改动
+    if xml.contains(&format!("<{tag}>")) {
+        return xml.to_string();
+    }
+    match xml.find("<Settings>") {
+        Some(pos) => {
+            let at = pos + "<Settings>".len();
+            let mut out = String::with_capacity(xml.len() + tag.len() * 2 + 12);
+            out.push_str(&xml[..at]);
+            out.push_str(&format!("<{tag}>{to}</{tag}>"));
+            out.push_str(&xml[at..]);
+            out
+        }
+        None => xml.to_string(),
+    }
+}
+
+/// 按 `WB_TASK_SETTINGS_RELAX` 依次放宽整份任务 XML。
+fn relax_task_settings_xml(xml: &str) -> String {
+    let mut out = xml.to_string();
+    for (tag, from, to) in WB_TASK_SETTINGS_RELAX {
+        out = patch_task_setting(&out, tag, from, to);
+    }
+    out
+}
+
+/// 解码 `schtasks /Query /XML` 输出：UTF-16LE（带 BOM）→ String；
+/// 非 UTF-16 时按 UTF-8 容错（与 misc::legacy_task_start_time 同一约定）。
+fn decode_task_xml(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).to_string()
+    }
+}
+
+/// 编码为 UTF-16LE + BOM（`schtasks /Create /XML` 接受 UTF-16 与 UTF-8-BOM；
+/// 沿用导出时的 UTF-16，避免中文任务名/描述在回写时丢失）。
+fn encode_task_xml(xml: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + xml.len() * 2);
+    out.extend_from_slice(&[0xFF, 0xFE]);
+    for u in xml.encode_utf16() {
+        out.extend_from_slice(&u.to_le_bytes());
+    }
+    out
+}
+
+/// 对已注册的单个任务应用设置放宽。失败仅表示「设置未放宽」，任务本身仍在，
+/// 调用方不应据此判定注册失败（因此 register 侧只记警告）。
+fn apply_relaxed_task_settings(name: &str) -> Result<(), String> {
+    let (ok, raw, stderr) = crate::commands::misc::run_schtasks_raw(&["/Query", "/TN", name, "/XML"])?;
+    if !ok {
+        return Err(format!("导出任务 XML 失败: {}", stderr.trim()));
+    }
+    let xml = decode_task_xml(&raw);
+    if xml.trim().is_empty() {
+        return Err("导出任务 XML 为空".to_string());
+    }
+    let patched = relax_task_settings_xml(&xml);
+    if patched == xml {
+        return Ok(()); // 已达标（幂等）
+    }
+    let tmp = std::env::temp_dir().join(format!("aiwork_task_{name}.xml"));
+    std::fs::write(&tmp, encode_task_xml(&patched))
+        .map_err(|e| format!("写临时任务 XML 失败: {e}"))?;
+    let xml_arg = tmp.to_string_lossy().to_string();
+    let res = crate::commands::misc::run_schtasks(&["/Create", "/TN", name, "/XML", &xml_arg, "/F"]);
+    let _ = std::fs::remove_file(&tmp);
+    let (ok2, _, stderr2) = res?;
+    if !ok2 {
+        return Err(format!("覆盖任务设置失败: {}", stderr2.trim()));
+    }
+    Ok(())
+}
+
+/// 注册 WorkBuddy 每日签到任务（每个时间一个 `_HHMM` 任务）。
+///
+/// 返回值：**设置放宽的警告列表**（空数组 = 完全成功）。
+/// 之所以不用 `Result<(), _>`：任务创建成功后「放宽设置」仍可能失败，
+/// 但任务本身已可用，不应让前端把整体判为注册失败——故把这类问题作为警告回传。
 #[tauri::command(async)]
-pub fn workbuddy_checkin_task_register(state: State<AppState>, times: Vec<String>) -> Result<(), String> {
+pub fn workbuddy_checkin_task_register(
+    state: State<AppState>,
+    times: Vec<String>,
+) -> Result<Vec<String>, String> {
     if times.is_empty() {
         return Err("至少需要一个触发时间（如 09:00 / 21:00）".into());
     }
@@ -194,6 +307,7 @@ pub fn workbuddy_checkin_task_register(state: State<AppState>, times: Vec<String
     for name in wb_checkin_task_names() {
         let _ = run_schtasks(&["/Delete", "/TN", &name, "/F"]);
     }
+    let mut warnings: Vec<String> = Vec::new();
     for t in &times {
         let hhmm = t.replace(':', "");
         let name = format!("{WB_CHECKIN_TASK_PREFIX}_{hhmm}");
@@ -203,8 +317,19 @@ pub fn workbuddy_checkin_task_register(state: State<AppState>, times: Vec<String
         if !ok {
             return Err(format!("注册任务 {t} 失败: {}", stderr.trim()));
         }
+        // 放宽 schtasks 默认的苛刻设置（见 WB_TASK_SETTINGS_RELAX 注释）：
+        // 失败只记警告——任务已创建并会按点执行，仅少了「错过补跑/允许电池」这两点韧性
+        if let Err(e) = apply_relaxed_task_settings(&name) {
+            warnings.push(format!("{t} 的设置放宽失败（任务已注册，按默认设置运行）: {e}"));
+        }
     }
-    Ok(())
+    if !warnings.is_empty() {
+        fs_utils::app_log(
+            &state.data_dir,
+            &format!("WorkBuddy 签到任务设置放宽警告: {}", warnings.join("；")),
+        );
+    }
+    Ok(warnings)
 }
 
 /// 任务名后缀 `_HHMM` → 展示用 `HH:MM`。
@@ -454,7 +579,10 @@ pub fn tray_checkin_all(app: &AppHandle, state: &AppState) {
 
 #[cfg(test)]
 mod tests {
-    use super::{hhmm_suffix_to_time, parse_task_names_csv};
+    use super::{
+        decode_task_xml, encode_task_xml, hhmm_suffix_to_time, parse_task_names_csv,
+        patch_task_setting, relax_task_settings_xml,
+    };
 
     /// 回归（2026-09-15 本机实测）：`schtasks /Query /FO CSV /NH` 实际**无 HostName 列**，
     /// 表头为「任务名,下次运行时间,模式」。按固定第 2 列取值会拿到「下次运行时间」，
@@ -505,5 +633,75 @@ mod tests {
         assert_eq!(hhmm_suffix_to_time("09_00"), "09:00"); // 历史形态：下划线分隔
         assert_eq!(hhmm_suffix_to_time("abc"), "abc");
         assert_eq!(hhmm_suffix_to_time(""), "");
+    }
+
+    /// 本机实测（2026-09-15）`schtasks /Query /XML` 导出的 `<Settings>` 段（节选）。
+    /// 这三项默认值即「用电池不启动 / 切电池中断 / 错过不补跑」，是签到漏跑的根因。
+    const SAMPLE_SETTINGS: &str = r#"<Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>false</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <Enabled>true</Enabled>
+  </Settings>"#;
+
+    /// 回归：三项默认值必须被放宽，且不得误伤同段落里的其它设置。
+    #[test]
+    fn relax_settings_rewrites_three_defaults() {
+        let out = relax_task_settings_xml(SAMPLE_SETTINGS);
+        assert!(out.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
+        assert!(out.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
+        assert!(out.contains("<StartWhenAvailable>true</StartWhenAvailable>"));
+        // 旧默认值必须消失（防止只插入不替换的实现）
+        assert!(!out.contains("<StartWhenAvailable>false</StartWhenAvailable>"));
+        assert!(!out.contains("<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>"));
+        // 其它设置原样保留
+        assert!(out.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(out.contains("<RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>"));
+        assert!(out.contains("<Enabled>true</Enabled>"));
+    }
+
+    /// 幂等：重复注册时对已放宽的 XML 再跑一次，结果不变（不会反复覆盖任务）。
+    #[test]
+    fn relax_settings_is_idempotent() {
+        let once = relax_task_settings_xml(SAMPLE_SETTINGS);
+        assert_eq!(relax_task_settings_xml(&once), once);
+    }
+
+    /// 少数系统导出会省略可选设置项：标签缺失时插到 `<Settings>` 之后，其余内容不动。
+    #[test]
+    fn patch_absent_tag_inserts_into_settings() {
+        let xml = "<Task><Settings><Enabled>true</Enabled></Settings></Task>";
+        assert_eq!(
+            patch_task_setting(xml, "StartWhenAvailable", "false", "true"),
+            "<Task><Settings><StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled></Settings></Task>"
+        );
+    }
+
+    /// 连 `<Settings>` 都没有（异常/残缺 XML）：原样返回，不掷不越界。
+    #[test]
+    fn patch_without_settings_is_noop() {
+        let xml = "<Task/>";
+        assert_eq!(patch_task_setting(xml, "StartWhenAvailable", "false", "true"), xml);
+        assert_eq!(relax_task_settings_xml(xml), xml);
+    }
+
+    /// XML 往返（UTF-16LE + BOM）：中文描述不得丢失或乱码。
+    #[test]
+    fn task_xml_roundtrip_keeps_unicode() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n\
+                   <Task><Description>每日签到</Description></Task>";
+        let bytes = encode_task_xml(xml);
+        assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
+        assert_eq!(decode_task_xml(&bytes), xml);
+    }
+
+    /// 非 UTF-16（无 BOM）输入按 UTF-8 容错解码，不 panic。
+    #[test]
+    fn decode_task_xml_falls_back_to_utf8() {
+        assert_eq!(decode_task_xml(b"<Task/>"), "<Task/>");
+        assert_eq!(decode_task_xml(&[]), "");
     }
 }

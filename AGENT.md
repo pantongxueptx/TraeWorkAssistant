@@ -371,6 +371,8 @@ ai-work-assistant/
 - JWT 默认 13 天过期；带 refresh_token 的账号可自动续期。
 - **`schtasks` 中文输出是 GBK**，直接 `String::from_utf8_lossy` 会乱码。统一走 `misc.rs::run_schtasks()`（前置 `chcp 65001`），**不要**再裸调 `Command::new("schtasks")`。
 - **`schtasks /Query /FO CSV` 不含 HostName 列**（实测 Win11 中文表头为「任务名,下次运行时间,模式」）：解析任务列表**不要按固定列号取值**，改按内容特征（任务名是唯一以 `\` 开头的字段，见 `workbuddy/checkin.rs::parse_task_names_csv`）。误取第 2 列会拿到「下次运行时间」，导致按前缀枚举恒为空——已注册任务在界面上仍显示「未注册」、取消注册也删不掉。
+- **`schtasks /Create` 的默认设置对「一天一次」类签到任务过于苛刻**（实测 Win11，2026-09-15）：注册出的任务带 `DisallowStartIfOnBatteries=true` / `StopIfGoingOnBatteries=true` / `StartWhenAvailable=false`——用电池不启动、切电池被中断、错过触发时刻**不补跑**（漏签且无提示）。`/Create` 无对应开关，需改走 XML 往返：`schtasks /Query /TN <name> /XML` 导出 → 替换这三项 → `schtasks /Create /TN <name> /XML <file> /F` 覆盖（见 `workbuddy/checkin.rs::apply_relaxed_task_settings`）。
+- **`schtasks /Query /XML` 输出是 UTF-16LE（带 BOM）**：**必须**用 `misc.rs::run_schtasks_raw()` 取原始字节再解码，用 `run_schtasks()`（`from_utf8_lossy`）会把 XML 毁成 NUL 与替换字符、无法回写。
 - **计划任务不加 `/RL HIGHEST`**：签到脚本只读写 `%APPDATA%` 并运行 Python，加了会让普通用户注册失败（Access Denied）。
 - **错误文案不重复加前缀**：Rust 端返回纯错误描述，`查询失败：` / `注册失败：` 等前缀由前端 `Settings.tsx` 统一拼接。
 - **`src-python/` 会打包进 `resources/python/`**：Python 侧改动在正式版必须 `npm run tauri build` 重新打包才生效；`npm run tauri dev` 直读源码，重启对应功能即生效。

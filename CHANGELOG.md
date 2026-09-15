@@ -43,6 +43,12 @@
 - **[P2] 任务时间显示为 `0900` 而非 `09:00`**（同文件）：`workbuddy_checkin_task_status` 用 `trim_start_matches(prefix).replace('_', ":")` 还原时间，但任务名后缀是 `_HHMM`（`HHMM` 已去冒号，后缀内不含下划线），该替换是空操作 → 界面显示「已注册：0900、2100」。新增 `hhmm_suffix_to_time`（`HHMM` → `HH:MM`，非 4 位纯数字原样返回以兼容历史命名）并补 2 条单测。
 - **实测校验**：本机（注册表侧真实任务）修复前枚举命中 0（显示「未注册」），修复后命中 `_0900`/`_2100` 并还原为 `09:00`/`21:00`；`checkin.rs` 新增 5 条单测，待构建机跑 `cargo test` 复核基线。
 
+### 修复（签到任务被 schtasks 默认设置卡死，2026-09-15）
+
+- **[P1] 签到任务「用电池不启动 / 切电池中断 / 错过不补跑」**（`src-tauri/src/commands/workbuddy/checkin.rs`）：`schtasks /Create` **没有**对应开关，注册出的任务默认带 `<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>`、`<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>`、`<StartWhenAvailable>false</StartWhenAvailable>`——笔记本在用电池时任务不启动、运行中切到电池被中断、到点时机器处于睡眠/关机则当天**直接漏签且无任何提示**（对比 GitHub 版 workbuddy-auto-signin 注册出的任务：`StartWhenAvailable=true`、电池两项为 `false`，抗「错过/没插电」能力更强）。新增 `WB_TASK_SETTINGS_RELAX`（三项放宽目标）+ `relax_task_settings_xml`（纯函数；标签整体缺失时插到 `<Settings>` 之后兜底）+ `apply_relaxed_task_settings`（`/Query /XML` 导出 → 字符串替换 → `/Create /XML /F` 覆盖，UTF-16LE+BOM 往返编码）；注册流程在每个任务创建成功后逐一套用，`misc.rs` 拆出 `run_schtasks_raw()` 以获取 `/XML` 的原始字节（既有 `run_schtasks()` 的 lossy UTF-8 会把 UTF-16 XML 毁成 NUL/替换字符）。
+- **`workbuddy_checkin_task_register` 返回值改为 `Result<Vec<String>, _>`**：返回**设置放宽失败的警告列表**（空数组 = 完全成功）。任务创建成功而放宽失败时不应让前端把整体判为注册失败——任务本身已可用、仍会按点执行，仅少了「错过补跑 / 允许电池运行」这两点韧性。
+- **实测校验**（本机真实任务定义 XML 跑等价算法）：`_0900`/`_2100`/`DailyCheckin` 三个任务均**只改动 3 行**（恰为目标三项），`Actions`/`Triggers`/`Principals`/`StartBoundary` 原样保留，二次执行幂等（`relax(x) == relax(relax(x))`）。`checkin.rs` 新增 6 条单测（三项改写且不误伤同段其它设置、幂等、标签缺失插入、无 `<Settings>` 原样返回、UTF-16 往返保留中文、UTF-8 兜底解码），待构建机 `cargo test` 复核基线。
+
 ### UI 布局全面审查与美化（commit f48bd95）
 
 - **Buddy 顶栏上下文修复**：TopBar 原仅双分支（doubao/Trae），Buddy 工作区误显示 Trae 安装状态与代理按钮——新增 `BuddyTopBar`（客户端安装/运行/登录态/账号池徽标 + 打开客户端），三应用各自上下文独立。
