@@ -138,19 +138,37 @@ fn task_exists(name: &str) -> bool {
     run_schtasks(&["/Query", "/TN", name, "/FO", "LIST"]).map(|(ok, _, _)| ok).unwrap_or(false)
 }
 
-/// 枚举当前用户可见的计划任务名（审查 P2）：`schtasks /Query /FO CSV /NH`，
-/// CSV 列序固定为 HostName, TaskName, ...（取第 2 列），结构不受系统语言影响；
+/// 解析 `schtasks /Query /FO CSV /NH` 的输出为任务名列表。
+///
+/// **不按固定列号取值**：`/FO CSV` 的列序在不同 schtasks 版本/系统上并不一致。
+/// 实测本机（Win11 中文，`schtasks /Query /FO CSV`）表头为
+/// `"任务名","下次运行时间","模式"`——**没有 HostName 列**；原实现按注释假设的
+/// `HostName, TaskName, ...` 取第 2 列，实际拿到的是「下次运行时间」，
+/// 于是按前缀枚举永远为空：任务注册成功（`schtasks /Create` 返回 0），
+/// 界面却始终显示「未注册」，点「注册」也看不到状态变化。
+///
+/// 改为按**内容特征**识别：任务名是唯一以 `\` 开头的字段
+/// （根目录 `\Name`、子目录 `\Folder\Name`），与列序、系统语言均无关。
 /// 带引号字段与根目录前缀 `\` 需剥离（本仓任务名不含逗号，按逗号切分安全）。
+fn parse_task_names_csv(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            line.split(',')
+                .map(|f| f.trim())
+                .find(|f| f.starts_with("\"\\"))
+                .map(|f| f.trim_matches('"').trim_start_matches('\\').to_string())
+        })
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// 枚举当前用户可见的计划任务名（审查 P2）：`schtasks /Query /FO CSV /NH`。
 fn list_task_names() -> Vec<String> {
     let Ok((_, stdout, _)) = run_schtasks(&["/Query", "/FO", "CSV", "/NH"]) else {
         return vec![];
     };
-    stdout
-        .lines()
-        .filter_map(|line| line.split(',').nth(1))
-        .map(|f| f.trim().trim_matches('"').trim_start_matches('\\').to_string())
-        .filter(|n| !n.is_empty())
-        .collect()
+    parse_task_names_csv(&stdout)
 }
 
 /// 按任务名前缀枚举本功能全部签到任务（兼容任意 _HHMM 后缀，不再硬编码 _0900/_2100/_1200）
@@ -189,12 +207,24 @@ pub fn workbuddy_checkin_task_register(state: State<AppState>, times: Vec<String
     Ok(())
 }
 
+/// 任务名后缀 `_HHMM` → 展示用 `HH:MM`。
+/// 原实现用 `replace('_', ":")`，但任务名是按 `format!("{PREFIX}_{hhmm}")` 生成的
+/// （`hhmm` 已去掉冒号），后缀里没有下划线，该替换是空操作——界面会显示
+/// 「已注册：0900、2100」。非 4 位纯数字时原样返回，兼容历史自定义命名。
+fn hhmm_suffix_to_time(suffix: &str) -> String {
+    if suffix.len() == 4 && suffix.chars().all(|c| c.is_ascii_digit()) {
+        format!("{}:{}", &suffix[..2], &suffix[2..])
+    } else {
+        suffix.replace('_', ":")
+    }
+}
+
 #[tauri::command(async)]
 pub fn workbuddy_checkin_task_status() -> Result<Vec<String>, String> {
     let prefix = format!("{WB_CHECKIN_TASK_PREFIX}_");
     Ok(wb_checkin_task_names()
         .iter()
-        .map(|name| name.trim_start_matches(&prefix).replace('_', ":"))
+        .map(|name| hhmm_suffix_to_time(name.trim_start_matches(&prefix)))
         .collect())
 }
 
@@ -419,5 +449,61 @@ pub fn tray_checkin_all(app: &AppHandle, state: &AppState) {
                 push_notify(Some(app), &state.data_dir, "一键签到", &msg);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hhmm_suffix_to_time, parse_task_names_csv};
+
+    /// 回归（2026-09-15 本机实测）：`schtasks /Query /FO CSV /NH` 实际**无 HostName 列**，
+    /// 表头为「任务名,下次运行时间,模式」。按固定第 2 列取值会拿到「下次运行时间」，
+    /// 导致已注册任务被枚举为空、界面误显示「未注册」。
+    #[test]
+    fn parse_task_names_without_hostname_column() {
+        let csv = "\"\\AIWorkAssistant_DailyCheckin\",\"2026/9/16 10:00:00\",\"就绪\"\n\
+                   \"\\AIWorkAssistant_WorkBuddyCheckin_0900\",\"2026/9/16 9:00:00\",\"就绪\"\n\
+                   \"\\AIWorkAssistant_WorkBuddyCheckin_2100\",\"2026/9/15 21:00:00\",\"就绪\"\n";
+        assert_eq!(
+            parse_task_names_csv(csv),
+            vec![
+                "AIWorkAssistant_DailyCheckin",
+                "AIWorkAssistant_WorkBuddyCheckin_0900",
+                "AIWorkAssistant_WorkBuddyCheckin_2100",
+            ]
+        );
+    }
+
+    /// 兼容带 HostName 列的历史列序：HostName 不以 `\` 开头，不会被误判为任务名。
+    #[test]
+    fn parse_task_names_with_hostname_column() {
+        let csv = "\"PC-01\",\"\\TaskA\",\"N/A\",\"Ready\"\n";
+        assert_eq!(parse_task_names_csv(csv), vec!["TaskA"]);
+    }
+
+    /// 子目录任务保留目录前缀；空行与无 `\` 字段的行（如状态行）被丢弃。
+    #[test]
+    fn parse_task_names_keeps_folder_prefix_and_skips_noise() {
+        let csv = "\"\\Microsoft\\Office\\TaskB\",\"2026/9/16 10:00:00\",\"就绪\"\n\n";
+        assert_eq!(
+            parse_task_names_csv(csv),
+            vec!["Microsoft\\Office\\TaskB"]
+        );
+    }
+
+    /// 回归：`_HHMM` 后缀必须还原为 `HH:MM`（原 `replace('_', ":")` 是空操作，
+    /// 界面会显示「已注册：0900、2100」）。
+    #[test]
+    fn hhmm_suffix_to_time_formats_colon() {
+        assert_eq!(hhmm_suffix_to_time("0900"), "09:00");
+        assert_eq!(hhmm_suffix_to_time("2100"), "21:00");
+    }
+
+    /// 非标准后缀原样返回（不 panic、不越界）。
+    #[test]
+    fn hhmm_suffix_to_time_passthrough_unknown() {
+        assert_eq!(hhmm_suffix_to_time("09_00"), "09:00"); // 历史形态：下划线分隔
+        assert_eq!(hhmm_suffix_to_time("abc"), "abc");
+        assert_eq!(hhmm_suffix_to_time(""), "");
     }
 }

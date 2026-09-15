@@ -37,6 +37,12 @@
 - **性能**：wb_model_route 通配零正则依赖、DDG 解析字符串定位无 HTML 解析器分配放大。
 - **审查后校验基线**：cargo **137/137**（+2 回归单测）、vitest 18/18、npm build、py_compile 全绿、零编译告警。
 
+### 修复（定时任务状态枚举误判「未注册」，2026-09-15）
+
+- **[P1] WorkBuddy 双时段签到任务「注册成功却始终显示未注册」**（`src-tauri/src/commands/workbuddy/checkin.rs`）：`list_task_names()` 按注释假设的 `HostName, TaskName, ...` 取 CSV 第 2 列，但实测 `schtasks /Query /FO CSV /NH` 表头为 `"任务名","下次运行时间","模式"`（**无 HostName 列**），取到的实为「下次运行时间」，按任务名前缀枚举恒为空。后果：`schtasks /Create` 实际已成功建出任务（09:00/21:00 两个任务均存在且就绪），但 `workbuddy_checkin_task_status` 返回空数组 → 界面一直显示「未注册」，点「注册」后状态无变化；「取消注册」同样失效（枚举不到，删不掉）。改为按内容特征识别任务名（唯一以 `\` 开头的字段），与列序/系统语言均无关；抽出纯函数 `parse_task_names_csv` 并补 3 条回归单测（无 HostName 列、含 HostName 列的兼容列序、子目录任务保留前缀）。
+- **[P2] 任务时间显示为 `0900` 而非 `09:00`**（同文件）：`workbuddy_checkin_task_status` 用 `trim_start_matches(prefix).replace('_', ":")` 还原时间，但任务名后缀是 `_HHMM`（`HHMM` 已去冒号，后缀内不含下划线），该替换是空操作 → 界面显示「已注册：0900、2100」。新增 `hhmm_suffix_to_time`（`HHMM` → `HH:MM`，非 4 位纯数字原样返回以兼容历史命名）并补 2 条单测。
+- **实测校验**：本机（注册表侧真实任务）修复前枚举命中 0（显示「未注册」），修复后命中 `_0900`/`_2100` 并还原为 `09:00`/`21:00`；`checkin.rs` 新增 5 条单测，待构建机跑 `cargo test` 复核基线。
+
 ### UI 布局全面审查与美化（commit f48bd95）
 
 - **Buddy 顶栏上下文修复**：TopBar 原仅双分支（doubao/Trae），Buddy 工作区误显示 Trae 安装状态与代理按钮——新增 `BuddyTopBar`（客户端安装/运行/登录态/账号池徽标 + 打开客户端），三应用各自上下文独立。
