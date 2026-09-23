@@ -13,7 +13,7 @@
 | 编号 | 功能点 | 应用域 | 优先级 | 预估 | 状态 |
 |---|---|---|---|---|---|
 | F-68 | Trae 项目列表/最近打开跨账号保留 | Trae 生态 | **P1** | 1~2 天 | 待开发（方案已论证） |
-| F-74 | Trae OAuth 授权闭环补全（回环监听 + 代理豁免 + code 交换） | Trae 生态 | **P1** | 1~2 天（批次1）/ 3~4 天（全链路） | 半实现（缺口清单已盘清，源自 issue #10） |
+| F-74 | Trae OAuth 授权闭环补全（回环监听 + 代理豁免 + code 交换） | Trae 生态 | **P1** | 批次3：1 天 | **批次1/2 已实施**（2026-09-23，回环监听 + 代理豁免 + 自动接续）；批次3 待开发 |
 | F-24-余 | 豆包会员额度端点抓包固化 | 豆包 | **P1** | 0.5~1 天（含抓包） | 框架已完成，仅剩前置 |
 | F-38 | Trae → DSH 引导（不自研） | Trae 生态 | **P1** | ≈0（装即用） | 待开发 |
 | E-01 | 豆包对话网关（OpenAI 兼容 doubao provider） | 豆包/网关 | **P2** | 8~12 天（含 E-02） | 待开发（方案 B 已论证，含探测实验前置） |
@@ -66,6 +66,7 @@
   3. **批次 3（1 天，健壮性）**：`oauth_parse_callback` 增加 `code` → token 交换分支；MITM 抓包固化 ExchangeToken 真实参数（client_secret 校验行为、refresh_token 轮换语义）；machine_id/device_id 改为从 `device_map.json` 按账号稳定读取；refresh_token 生命周期字段对齐 Buddy 侧（expires_at / 失败计数 / 失效标记）。
 - **参考开源项目**：`dingminhua/dsh-connect-trae`（loopback shim 接收回调的成熟形态，F-38 已引）；本项目 Buddy 侧 `workbuddy_oauth_login`（后端开浏览器 + 轮询 + 自动入池，直接对照实现）；`BlueChonk/trae-credential-reverse-engineering`（token 刷新签名情报，见 F-70，批次 3 联动核对）。
 - **验收**：MITM 代理运行中（复现 issue #10 环境）发起 OAuth 登录 → 浏览器完成授权 → 应用自动弹出"账号已添加"，全程无需手动复制 URL；粘贴回调 URL 兜底路径保留可用；登录页不再出现证书告警；OAuth 账号的签到/续期与 MITM 捕获账号行为一致。
+- **进展（2026-09-23）**：**批次 1/2 已实施**——新增 `commands/oauth_loopback.rs`（`oauth_loopback_start/stop`：17388 回环监听，首个回调即优雅停机 + 10min 兜底超时；`oauth_proxy_pause/restore`：登录期间临时关闭系统代理，覆盖 MITM CA 未信任与死代理两症状）+ `OAuthLoginModal` 经 `oauth-callback` 事件自动接续落库，手动粘贴 URL 降级为兜底。缺口 ③ code 交换、④ client_secret、⑤ 设备标识一致性、⑥ refresh_token 生命周期仍留批次 3。
 
 ### F-24-余 豆包会员额度端点抓包固化（P1，框架已完成）
 

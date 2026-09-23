@@ -369,6 +369,11 @@ export const api = {
       invoke('oauth_parse_callback', { callbackUrl }),
     login: (callbackUrl: string, accountName?: string, groupId?: string) =>
       invoke<OAuthLoginResult>('oauth_login', { callbackUrl, accountName, groupId }),
+    // F-74 批次1/2：回环监听（127.0.0.1:17388 自动收回调）+ OAuth 期间系统代理豁免
+    loopbackStart: () => invoke<void>('oauth_loopback_start'),
+    loopbackStop: () => invoke<void>('oauth_loopback_stop'),
+    proxyPause: () => invoke<void>('oauth_proxy_pause'),
+    proxyRestore: () => invoke<void>('oauth_proxy_restore'),
   },
   apiServer: {
     start: () => invoke<ApiServiceStatus>('api_server_start'),

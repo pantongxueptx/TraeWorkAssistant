@@ -475,7 +475,7 @@ fn append_log(path: &std::path::Path, line: &str) {
 // Windows 系统代理(WinINet)。故启动本地代理时同步把系统代理指向本机端口，TRAE 的全部
 // 流量(含鉴权)即汇入我们的 MITM 代理；停止时还原，避免全局断网。
 #[cfg(target_os = "windows")]
-fn apply_proxy(enable: bool, server: &str, override_: &str) -> Result<(), String> {
+pub(crate) fn apply_proxy(enable: bool, server: &str, override_: &str) -> Result<(), String> {
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     run_reg(key, "ProxyEnable", "REG_DWORD", if enable { "1" } else { "0" })?;
     if enable {

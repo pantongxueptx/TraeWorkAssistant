@@ -695,6 +695,11 @@ export interface OAuthLoginResult {
   has_refresh_token: boolean;
 }
 
+/** OAuth 回环监听器回调事件（oauth-callback，F-74 批次1）：payload 为完整回调 URL */
+export interface OAuthCallbackEvent {
+  url: string;
+}
+
 // ---- 应用自更新 ----
 export interface UpdateCheckResult {
   has_update: boolean;
