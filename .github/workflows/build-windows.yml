@@ -37,6 +37,9 @@ jobs:
 
       - name: Build Tauri app (NSIS only)
         run: npm run tauri build -- --bundles nsis
+        env:
+          # runner 控制台为 cp1252，强制 Python 子进程用 UTF-8 输出，防中文日志编码崩溃
+          PYTHONUTF8: "1"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

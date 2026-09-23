@@ -38,6 +38,14 @@ def log(msg: str) -> None:
     print(f"[python-runtime] {msg}", flush=True)
 
 
+# 控制台编码防御：GitHub Actions Windows runner 的 stdout 是 cp1252，
+# 直接 print 中文会 UnicodeEncodeError 使 beforeBuildCommand 失败。
+# errors="replace" 保证任何终端编码下都只降级显示、不中断构建
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
+
+
 def fail(msg: str) -> None:
     log(f"ERROR: {msg}")
     sys.exit(1)
