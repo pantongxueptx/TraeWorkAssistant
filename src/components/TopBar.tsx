@@ -68,7 +68,7 @@ function TraeTopBar() {
 
   return (
     <>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         {envCn?.installed ? (
           <Badge tone="green" title={envCn.version ? `Trae 当前版本：v${envCn.version}` : '未检测到 Trae 版本号'}>
             <MonitorCheck size={13} /> Trae 已安装
@@ -103,7 +103,7 @@ function TraeTopBar() {
           <Server size={13} /> {apiStatus?.running ? `API网关运行中 :${apiStatus.port}` : 'API网关未启动'}
         </Badge>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         <button onClick={openTraeCn} className="btn-outline" title="打开 Trae CN IDE">
           <ExternalLink size={15} /> 打开 Trae
         </button>
@@ -156,7 +156,7 @@ function DoubaoTopBar() {
 
   return (
     <>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         {locate?.exe ? (
           <Badge tone="green" title={locate.version ? `豆包当前版本：v${locate.version}` : '豆包桌面版'}>
             <MonitorCheck size={13} /> 豆包已安装
@@ -179,7 +179,7 @@ function DoubaoTopBar() {
           <Wifi size={13} /> {proxy.running ? `代理运行中 :${proxy.port}` : '代理未启动'}
         </Badge>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         <button onClick={() => void launch()} className="btn-outline" disabled={!locate?.exe}>
           <ExternalLink size={15} /> 打开豆包
         </button>
@@ -256,7 +256,7 @@ function BuddyTopBar() {
 
   return (
     <>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         {wbEnv?.installed ? (
           <Badge tone="green" title={wbEnv.version ? `WorkBuddy 当前版本：v${wbEnv.version}` : 'WorkBuddy 客户端'}>
             <MonitorCheck size={13} /> WorkBuddy已安装
@@ -295,7 +295,7 @@ function BuddyTopBar() {
           <Server size={13} /> {apiStatus?.running ? `API网关运行中 :${apiStatus.port}` : 'API网关未启动'}
         </Badge>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 whitespace-nowrap">
         <button onClick={() => void launchApp('wb')} className="btn-outline" disabled={launching != null}>
           {launching === 'wb' ? <Loader2 size={15} className="animate-spin" /> : <ExternalLink size={15} />} 打开WorkBuddy
         </button>
@@ -320,7 +320,7 @@ function BuddyTopBar() {
 export default function TopBar() {
   const activeApp = useAppStore((s) => s.activeApp);
   return (
-    <div className="flex h-12 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="flex min-h-12 shrink-0 flex-wrap content-center items-center justify-between gap-x-4 gap-y-1.5 border-b border-slate-200 bg-white px-4 py-1 dark:border-zinc-800 dark:bg-zinc-950">
       {activeApp === 'doubao' ? <DoubaoTopBar /> : activeApp === 'buddy' ? <BuddyTopBar /> : <TraeTopBar />}
     </div>
   );

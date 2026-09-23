@@ -37,6 +37,11 @@
 - **性能**：wb_model_route 通配零正则依赖、DDG 解析字符串定位无 HTML 解析器分配放大。
 - **审查后校验基线**：cargo **137/137**（+2 回归单测）、vitest 18/18、npm build、py_compile 全绿、零编译告警。
 
+### 修复（Trae OAuth 登录闭环：回环监听 + 代理豁免，F-74 批次1/2，2026-09-23）
+
+- **[P1] OAuth 登录页在浏览器「一直处于加载中」**（issue #10 / backlog F-74，`src-tauri/src/commands/oauth_loopback.rs` 新增）：两个根因一并修复——① **代理豁免**：登录页在系统浏览器打开，系统代理开启时（本软件 MITM 运行中 → 自签 CA 未信任，主页面/CDN 资源被解密失败静默挂起；或系统代理指向已死端口 → 全部请求无限转圈，实测机器残留 `127.0.0.1:7897` 死代理即此症状），授权页永远加载不出来。现 `oauth_proxy_pause` 在打开登录页时临时关闭系统代理（保存原值），`oauth_proxy_restore` 在 Modal 关闭/登录完成时还原（复用 proxy.rs 的 `apply_proxy`/`get_existing_win_proxy`，改 `pub(crate)`）；② **回环监听**：redirect_uri 指向的 `127.0.0.1:17388/authorize` 此前无人监听，登录成功后浏览器只见「无法访问」，用户须手动复制地址栏 URL 粘贴回来——链路从未闭环。现 `oauth_loopback_start` 起短生命周期 axum 服务（复用既有依赖，绑定失败同步报错明示），收到回调 → `oauth-callback` 事件交前端自动调 `oauth_login` 落库 → 浏览器收到「授权回调已接收」提示页；首个回调即优雅停机（`Notify` + `with_graceful_shutdown`），另有 10 分钟 std 线程兜底超时（tokio 未启用 time feature）防端口常驻。`OAuthLoginModal` 自动接续（`finishRef` 避免 effect 重挂），手动粘贴 URL 保留为兜底路径；`oauth_loopback_stop` 幂等收尾。
+- **已知边界**：本机无 Rust 工具链（构建走 GitHub Actions），待 CI `cargo check`/`cargo test` 复核；前端 `tsc` 全绿。
+
 ### 修复（定时任务状态枚举误判「未注册」，2026-09-15）
 
 - **[P1] WorkBuddy 双时段签到任务「注册成功却始终显示未注册」**（`src-tauri/src/commands/workbuddy/checkin.rs`）：`list_task_names()` 按注释假设的 `HostName, TaskName, ...` 取 CSV 第 2 列，但实测 `schtasks /Query /FO CSV /NH` 表头为 `"任务名","下次运行时间","模式"`（**无 HostName 列**），取到的实为「下次运行时间」，按任务名前缀枚举恒为空。后果：`schtasks /Create` 实际已成功建出任务（09:00/21:00 两个任务均存在且就绪），但 `workbuddy_checkin_task_status` 返回空数组 → 界面一直显示「未注册」，点「注册」后状态无变化；「取消注册」同样失效（枚举不到，删不掉）。改为按内容特征识别任务名（唯一以 `\` 开头的字段），与列序/系统语言均无关；抽出纯函数 `parse_task_names_csv` 并补 3 条回归单测（无 HostName 列、含 HostName 列的兼容列序、子目录任务保留前缀）。
