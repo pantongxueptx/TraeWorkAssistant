@@ -34,6 +34,46 @@ struct PendingLogin {
 
 static PENDING_LOGIN: Mutex<Option<PendingLogin>> = Mutex::new(None);
 
+/// OAuth 设备标识（一次生成、持久复用）：对齐 Trae IDE——device_id 为设备稳定标识
+/// （实测 IDE 为 16 位数字且跨会话不变，aha 日志 device_id=3841044410562535），
+/// machine_id 32 位 hex。账号与设备绑定后，同账号同设备重复授权正常，而
+/// 「同账号每次换新设备重新授权」会被服务端卡在授权页「认证中」（2026-10-13 实测），
+/// 故必须固定复用，不得每次随机。
+fn load_or_create_device_identity(state: &AppState) -> Result<(String, String), String> {
+    let path = state.data_path("oauth_device.json");
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let device_id = v
+                .get("device_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let machine_id = v
+                .get("machine_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if device_id.len() == 16 && machine_id.len() == 32 {
+                return Ok((device_id, machine_id));
+            }
+        }
+    }
+    let device_id: String = (0..16).map(|_| {
+        let n = (random_hex(2).chars().next().unwrap() as u8).wrapping_rem(10);
+        (b'0' + n) as char
+    }).collect();
+    let machine_id = random_hex(32);
+    fs_utils::write_json(
+        &path,
+        &serde_json::json!({
+            "device_id": device_id,
+            "machine_id": machine_id,
+            "created_at": fs_utils::now_iso(),
+        }),
+    )?;
+    Ok((device_id, machine_id))
+}
+
 /// OAuth 回调解析结果（新版 PKCE 流程）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OAuthCallbackInfo {
@@ -179,17 +219,14 @@ fn device_public_key_pem() -> Result<String, String> {
     Err("生成设备密钥对失败".into())
 }
 
-/// 生成 OAuth 登录 URL（PKCE 授权码模式，参数对齐 IDE koe 流程 probe 实测形态）
+/// 生成 OAuth 登录 URL（PKCE 授权码模式，参数对齐 IDE koe 流程 probe 实测形态）；
+/// 设备标识取自持久化的稳定身份（load_or_create_device_identity）
 #[tauri::command]
-pub fn oauth_get_login_url() -> OAuthLoginUrl {
+pub fn oauth_get_login_url(state: State<AppState>) -> Result<OAuthLoginUrl, String> {
     let code_verifier = random_hex(64); // hex 字符均属 PKCE verifier 合法字符集
     let challenge = b64url_no_pad(&Sha256::digest(code_verifier.as_bytes()));
     let login_trace_id = random_hex(16);
-    let machine_id = random_hex(32);
-    let device_id: String = (0..15).map(|_| {
-        let n = (random_hex(2).chars().next().unwrap() as u8).wrapping_rem(10);
-        (b'0' + n) as char
-    }).collect();
+    let (device_id, machine_id) = load_or_create_device_identity(&state)?;
 
     let url = format!(
         "https://www.trae.cn/authorization?\
@@ -232,11 +269,11 @@ pub fn oauth_get_login_url() -> OAuthLoginUrl {
         device_id,
     });
 
-    OAuthLoginUrl {
+    Ok(OAuthLoginUrl {
         url,
         state: login_trace_id,
         redirect_uri: OAUTH_REDIRECT_URI.to_string(),
-    }
+    })
 }
 
 /// 解析 OAuth 回调 URL

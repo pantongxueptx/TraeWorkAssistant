@@ -34,10 +34,16 @@ struct LoopbackServer {
 
 static LOOPBACK: Mutex<Option<LoopbackServer>> = Mutex::new(None);
 
-/// 系统代理暂停标记：外层 Some = 暂停生效中；内层 Some = 暂停前有启用中的代理（还原用），
-/// 内层 None = 本来就没有系统代理（无需还原）。
+/// 系统代理暂停记录：saved = 暂停前的系统代理（None = 本来就没有启用的代理）；
+/// we_paused = 是否由本流程关闭了系统代理（仅 MITM 场景；用户自有代理如 Clash 不动）。
 #[cfg(target_os = "windows")]
-static PAUSED_PROXY: Mutex<Option<Option<(bool, String, String)>>> = Mutex::new(None);
+struct PausedProxy {
+    saved: Option<(bool, String, String)>,
+    we_paused: bool,
+}
+
+#[cfg(target_os = "windows")]
+static PAUSED_PROXY: Mutex<Option<PausedProxy>> = Mutex::new(None);
 
 /// 启动回环监听（幂等：已在监听时直接成功）。绑定失败（端口被占）同步返回错误，
 /// 前端 toast 明示，不让链路静默断裂。
@@ -155,8 +161,9 @@ async fn handle_other() -> Html<String> {
 // ---------------- 缺口2：OAuth 期间系统代理豁免 ----------------
 
 /// 暂停系统代理（OAuth 流程开始时调用）。幂等：已在暂停中则跳过。
-/// 场景覆盖：本软件 MITM 运行中（CA 未信任 → SSL 报错/资源静默失败）与系统代理指向
-/// 已死端口（浏览器请求无限挂起——issue #10「一直处于加载中」的直接来源）。
+/// 2026-10-13 修正：仅当系统代理指向**本软件 MITM 端口**时才关闭（CA 未信任撞 SSL 场景）；
+/// 用户自有代理（Clash 等）一律保持不动——授权页经其访问正常，无条件关闭反而切断
+/// 授权页的服务端校验链路（同日实测：Clash 在走时授权成功、系统代理被关闭后全卡「认证中」）。
 #[tauri::command]
 pub fn oauth_proxy_pause(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -166,37 +173,54 @@ pub fn oauth_proxy_pause(app: AppHandle) -> Result<(), String> {
             return Ok(());
         }
         let saved = super::proxy::get_existing_win_proxy();
-        if let Some((_, server, _)) = &saved {
-            super::proxy::apply_proxy(false, "", "")?;
-            fs_utils::app_log(
-                &app.state::<AppState>().data_dir,
-                &format!("OAuth 登录：已临时关闭系统代理（原指向 {server}），结束后自动还原"),
-            );
-        }
-        *guard = Some(saved);
+        let we_paused = match &saved {
+            Some((true, server, _))
+                if super::proxy::is_app_mitm_proxy(server, &app.state::<AppState>()) =>
+            {
+                super::proxy::apply_proxy(false, "", "")?;
+                fs_utils::app_log(
+                    &app.state::<AppState>().data_dir,
+                    &format!("OAuth 登录：已临时关闭本软件 MITM 系统代理（原指向 {server}），结束后自动还原"),
+                );
+                true
+            }
+            Some((true, server, _)) => {
+                // 用户自有代理：不动，但记一条日志便于排查（授权页经其访问）
+                fs_utils::app_log(
+                    &app.state::<AppState>().data_dir,
+                    &format!("OAuth 登录：系统代理指向 {server}（非本软件 MITM），保持不动"),
+                );
+                false
+            }
+            _ => false,
+        };
+        *guard = Some(PausedProxy { saved, we_paused });
     }
     Ok(())
 }
 
-/// 还原暂停前的系统代理（OAuth 流程结束/Modal 关闭时调用）
+/// 还原暂停前的系统代理（OAuth 流程结束/Modal 关闭时调用）。
+/// 仅当本流程真正关闭过系统代理时才写回，避免误改用户自有代理。
 #[tauri::command]
 pub fn oauth_proxy_restore(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        if let Some(saved) = PAUSED_PROXY
+        if let Some(paused) = PAUSED_PROXY
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
         {
-            if let Some((true, server, override_)) = saved {
-                super::proxy::apply_proxy(true, &server, &override_)?;
-                fs_utils::app_log(
-                    &app.state::<AppState>().data_dir,
-                    "OAuth 登录结束：系统代理已还原",
-                );
+            if paused.we_paused {
+                if let Some((true, server, override_)) = paused.saved {
+                    super::proxy::apply_proxy(true, &server, &override_)?;
+                    fs_utils::app_log(
+                        &app.state::<AppState>().data_dir,
+                        "OAuth 登录结束：系统代理已还原",
+                    );
+                }
             }
         }
     }
-    let _ = app; // 非 Windows 下消除未用参数告警
+    let _ = &app; // 非 Windows 下消除未用参数告警
     Ok(())
 }

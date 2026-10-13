@@ -189,7 +189,7 @@ export function OAuthLoginModal({
 
         {step === 1 && (
           <div className="space-y-2 text-sm text-slate-600 dark:text-zinc-300">
-            <div>点击「打开登录页」在浏览器中完成 OAuth 授权。登录期间会临时绕开系统代理（结束后自动还原），并已在本机 17388 端口自动接收回调。</div>
+            <div>点击「打开登录页」在浏览器中完成 OAuth 授权。若系统代理为本软件的抓包代理会临时绕开（结束后自动还原）；你自己的代理（如 Clash）不受影响。回调已在本机 17388 端口自动接收。</div>
             <div>授权完成后应用会<b>自动添加账号</b>，通常无需手动操作。</div>
           </div>
         )}

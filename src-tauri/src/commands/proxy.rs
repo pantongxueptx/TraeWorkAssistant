@@ -586,6 +586,19 @@ fn reg_query_value(key: &str, name: &str) -> Option<String> {
     None
 }
 
+/// 判断系统代理是否指向本软件的 MITM 端口（proxy_start 写盘的 last_proxy_port.txt）。
+/// server 形如 `127.0.0.1:8899` 或 `http=...;https=...` 分号串，做包含匹配。
+#[cfg(target_os = "windows")]
+pub(crate) fn is_app_mitm_proxy(server: &str, state: &AppState) -> bool {
+    let port = std::fs::read_to_string(state.data_dir.join("last_proxy_port.txt"))
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok());
+    match port {
+        Some(p) => server.contains(&format!("127.0.0.1:{p}")),
+        None => false,
+    }
+}
+
 /// 读取启动前的系统代理设置。返回 (enabled, server, override)。
 /// 若不存在或未启用则返回 None（表示用户本来就没有系统代理/VPN）。
 #[cfg(target_os = "windows")]
