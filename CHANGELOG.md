@@ -4,6 +4,16 @@
 
 ---
 
+## [3.4.6] · Trae OAuth 登录协议迁移（F-74 批次 3，2026-10-13）
+
+### 修复（OAuth 授权页永久卡「认证中」，根因：旧版授权协议已被服务端废弃）
+
+- **[P1] 旧版 `response_type=code` 授权 URL 失效**（`src-tauri/src/commands/oauth.rs` 全链路重写）：日志证实 9/24 起回环监听零回调——卡点不在本机接收端，而是 trae.cn 授权页对旧参数（无 PKCE）校验不过、永不重定向。对齐 Trae IDE v1.107.1 真实协议（逆向 `out/main.js` 的 `Are`/`Dre` 类 + probe 脚本两轮实测）：① `oauth_get_login_url` 改发 PKCE 授权码模式参数（`code_challenge`(S256)/`login_channel=native_ide`/`auth_type=local`/`redirect=0`/`login_trace_id` 等，verifier/trace/设备标识记录于 `PENDING_LOGIN`）；② 回调解析 `authCodeInfo`(JSON AuthCode)/`userInfo`/`host`，CSRF 校验从 state 换为 loginTraceID 一致性（未签发时宽容）；③ 新增 `exchange_token_by_auth_code`——POST `{host}/trae/api/v3/oauth/ExchangeToken`，头带 `x-cloudide-token`（空值），`DeviceInfo.DevicePublicKey` 必填（新增 `p256` 依赖生成 ECDSA P-256 SPKI PEM，probe 实测缺失时 401/400），响应 `{ResponseMetadata, Result:{Token, RefreshToken}}`；④ `get_user_info` 鉴权头从 `Authorization: Cloud-IDE-JWT` 改为 `x-cloudide-token`（实测新 token 前者 401 后者 200）。实测全链路通过：授权回调 → 换发 Token/RefreshToken → 签到状态接口 200（授权设备与签到伪设备不一致亦可，服务端不强校验）→ SaaS 刷新端点对新 RefreshToken 兼容。`types.ts` OAuthCallbackInfo 同步改形。
+- **[P1] JWT 刷新响应信封失配**（`accounts.rs` `refresh_jwt_impl`）：Trae 已切换 volcengine 风格信封 `{ResponseMetadata, Result}`（错误经 `ResponseMetadata.Error.Code/Message`），旧解析按 `code!=0` 判定恒报「ExchangeToken 失败 (code=-1)」。改为先查 `ResponseMetadata/Error` 再兼容旧 `code` 信封，字段解析大小写双兼容（`Result.Token`/`data.access_token`）；`fs_utils.rs` dig 信封键补 `Result`。
+- **已知边界**：`OAUTH_IDE_VERSION`（1.107.1）为模拟的 IDE 版本常量，随 IDE 演进需手动同步；本进程未发起过登录时粘贴回调会明确报错（PKCE verifier 缺失），重新走「打开登录页」即可。
+
+---
+
 ## [3.4.5] · feature/buddy 批次 5（生态吸收与网关增强，T5.2~T5.6/T5.8）
 
 ### 新增

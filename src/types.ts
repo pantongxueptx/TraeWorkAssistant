@@ -680,11 +680,13 @@ export interface OAuthLoginUrl {
 }
 
 export interface OAuthCallbackInfo {
-  refresh_token: string;
-  access_token: string | null;
+  /** PKCE 授权码（回调 authCodeInfo.AuthCode），由后端换取 token */
+  auth_code: string;
   user_id: string | null;
   user_name: string | null;
   avatar: string | null;
+  /** 回调 host（服务端指定的 ExchangeToken API host） */
+  api_host: string | null;
 }
 
 export interface OAuthLoginResult {

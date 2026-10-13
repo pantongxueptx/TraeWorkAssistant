@@ -1442,22 +1442,40 @@ pub fn refresh_jwt_impl(state: &AppState, user_id: &str) -> Result<String, Strin
     let body: serde_json::Value =
         resp.into_json().map_err(|e| format!("解析响应失败: {}", e))?;
 
-    let code = body.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-    if code != 0 {
-        let msg = body
-            .get("message")
+    // 信封兼容（2026-10-13 实测）：Trae 已切换 volcengine 风格 {ResponseMetadata, Result}，
+    // 错误经 ResponseMetadata.Error.Code/Message 返回；旧 {code, data} 信封保留兼容
+    if let Some(err) = body.pointer("/ResponseMetadata/Error").filter(|e| !e.is_null()) {
+        let code = err
+            .get("Code")
+            .and_then(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            })
+            .unwrap_or_default();
+        let msg = err
+            .get("Message")
             .and_then(|v| v.as_str())
             .unwrap_or("未知错误");
         return Err(format!("ExchangeToken 失败 (code={}): {}", code, msg));
     }
+    if let Some(code) = body.get("code").and_then(|v| v.as_i64()) {
+        if code != 0 {
+            let msg = body
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知错误");
+            return Err(format!("ExchangeToken 失败 (code={}): {}", code, msg));
+        }
+    }
 
-    // F-49 宽容解析：data 信封内字段直接 dig 查找，兼容嵌套包裹
-    let new_access_token = crate::fs_utils::dig(&body, &["access_token", "token"])
+    // F-49 宽容解析：字段大小写两种信封均兼容（新 Result.Token / 旧 data.access_token）
+    let new_access_token = crate::fs_utils::dig(&body, &["Token", "token", "access_token"])
         .and_then(|v| v.as_str())
         .ok_or("响应中缺少 access_token")?;
 
     // 提取新 refresh_token（可能轮换）
-    let new_refresh_token = crate::fs_utils::dig(&body, &["refresh_token"])
+    let new_refresh_token = crate::fs_utils::dig(&body, &["RefreshToken", "refresh_token"])
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 

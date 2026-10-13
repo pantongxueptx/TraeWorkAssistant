@@ -13,7 +13,7 @@
 | 编号 | 功能点 | 应用域 | 优先级 | 预估 | 状态 |
 |---|---|---|---|---|---|
 | F-68 | Trae 项目列表/最近打开跨账号保留 | Trae 生态 | **P1** | 1~2 天 | 待开发（方案已论证） |
-| F-74 | Trae OAuth 授权闭环补全（回环监听 + 代理豁免 + code 交换） | Trae 生态 | **P1** | 批次3：1 天 | **批次1/2 已实施**（2026-09-23，回环监听 + 代理豁免 + 自动接续）；批次3 待开发 |
+| F-74 | Trae OAuth 授权闭环补全（回环监听 + 代理豁免 + code 交换） | Trae 生态 | **P1** | 批次3：1 天 | **批次1/2 已实施**（2026-09-23）；**批次3 核心已实施**（2026-10-13，PKCE 协议迁移 + 信封兼容，登录/签到/刷新实测全通）；⑤⑥ 留待办 |
 | F-24-余 | 豆包会员额度端点抓包固化 | 豆包 | **P1** | 0.5~1 天（含抓包） | 框架已完成，仅剩前置 |
 | F-38 | Trae → DSH 引导（不自研） | Trae 生态 | **P1** | ≈0（装即用） | 待开发 |
 | E-01 | 豆包对话网关（OpenAI 兼容 doubao provider） | 豆包/网关 | **P2** | 8~12 天（含 E-02） | 待开发（方案 B 已论证，含探测实验前置） |
@@ -67,6 +67,7 @@
 - **参考开源项目**：`dingminhua/dsh-connect-trae`（loopback shim 接收回调的成熟形态，F-38 已引）；本项目 Buddy 侧 `workbuddy_oauth_login`（后端开浏览器 + 轮询 + 自动入池，直接对照实现）；`BlueChonk/trae-credential-reverse-engineering`（token 刷新签名情报，见 F-70，批次 3 联动核对）。
 - **验收**：MITM 代理运行中（复现 issue #10 环境）发起 OAuth 登录 → 浏览器完成授权 → 应用自动弹出"账号已添加"，全程无需手动复制 URL；粘贴回调 URL 兜底路径保留可用；登录页不再出现证书告警；OAuth 账号的签到/续期与 MITM 捕获账号行为一致。
 - **进展（2026-09-23）**：**批次 1/2 已实施**——新增 `commands/oauth_loopback.rs`（`oauth_loopback_start/stop`：17388 回环监听，首个回调即优雅停机 + 10min 兜底超时；`oauth_proxy_pause/restore`：登录期间临时关闭系统代理，覆盖 MITM CA 未信任与死代理两症状）+ `OAuthLoginModal` 经 `oauth-callback` 事件自动接续落库，手动粘贴 URL 降级为兜底。缺口 ③ code 交换、④ client_secret、⑤ 设备标识一致性、⑥ refresh_token 生命周期仍留批次 3。
+- **进展（2026-10-13）**：**批次 3 核心已实施（登录链路协议迁移）**——用户实测发现授权页永久卡「认证中」，日志证实 9/24 起回环监听零回调，根因为**旧版 `response_type=code` 授权参数已被服务端废弃**（缺口 ③ 以更彻底的方式成立）。逆向 Trae IDE v1.107.1 `out/main.js`（`Are`/`Dre`/`bTe`）+ `scripts/trae_oauth_probe.py` 两轮实测固化真实协议：登录 URL 改 PKCE 授权码模式（`code_challenge` S256 + `login_channel=native_ide` 等），回调 `authCodeInfo.AuthCode` → `POST /trae/api/v3/oauth/ExchangeToken`（头 `x-cloudide-token` 空值、`DeviceInfo.DevicePublicKey` 必填 ECDSA P-256 PEM——新增 `p256` 依赖，缺失时 401/400）→ `Result.{Token, RefreshToken}`。同批修复**响应信封迁移**（volcengine 风格 `{ResponseMetadata, Result}`，`refresh_jwt_impl`/`oauth.rs` 双兼容解析）与 `get_user_info` 鉴权头（`x-cloudide-token`）。实测：授权 → 换发 → 签到状态 200（OAuth 绑定设备与签到伪设备不一致不强校验）→ SaaS 刷新端点对新 RefreshToken 兼容。缺口 ⑤/⑥ 仍留待办（稳定设备与生命周期管理）。
 
 ### F-24-余 豆包会员额度端点抓包固化（P1，框架已完成）
 

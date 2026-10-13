@@ -198,7 +198,7 @@ pub fn app_log(data_dir: &Path, msg: &str) {
 // "auth"/"account"：CodeBuddy 桌面端 auth 文件为嵌套结构（token/到期在 .auth.*，
 // 账号信息在 .account.*，实测 2026-09 结构 {account, accounts, allAccounts, auth}），
 // 追加这两个包裹键后 dig() 为原 workbuddy 本地实现的超集，语义安全。
-const ENVELOPE_KEYS: [&str; 7] = ["data", "result", "resp", "response", "info", "auth", "account"];
+const ENVELOPE_KEYS: [&str; 8] = ["data", "result", "Result", "resp", "response", "info", "auth", "account"];
 const DIG_MAX_DEPTH: usize = 8;
 
 /// 在 `v` 中按顺序查找 keys 中的任一键，返回第一个命中值。

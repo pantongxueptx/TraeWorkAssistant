@@ -1,6 +1,6 @@
 [package]
 name = "ai-work-assistant"
-version = "3.4.5"
+version = "3.4.6"
 description = "AI Work 助手 - 多账号签到与管理桌面端"
 edition = "2021"
 rust-version = "1.77"
@@ -30,6 +30,8 @@ tokio = { version = "1", features = ["sync", "io-util", "net", "rt", "macros"] }
 tokio-stream = "0.1"
 bytes = "1"
 sha2 = "0.10"
+# OAuth 登录（F-74 批次3）：ExchangeToken DeviceInfo.DevicePublicKey 需 ECDSA P-256 公钥（纯 Rust 实现，无系统依赖）
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "pkcs8", "std"] }
 # 读 Trae 应用的 state.vscdb（SQLite）——自动发现当前登录账号的 Cloud-IDE uid
 rusqlite = { version = "0.32", features = ["bundled"] }
 
